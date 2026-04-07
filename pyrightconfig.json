@@ -1,0 +1,15 @@
+{
+    "venvPath": ".",
+    "venv": ".venv",
+    "typeCheckingMode": "off",
+    "reportMissingImports": "error",
+    "reportUnusedImport": "warning",
+    "reportUnusedVariable": "warning",
+    "useLibraryCodeForTypes": true,
+    "enableReachabilityAnalysis": true,
+    "analyzeUnannotatedFunctions": true,
+    "enableTypeIgnoreComments": true,
+    "extraPaths": [
+        "src"
+    ]
+}

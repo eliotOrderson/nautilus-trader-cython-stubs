@@ -1,0 +1,10 @@
+[project]
+name = "nautilus-trader-cython-stubs"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "cython>=3.2.4",
+    "litellm>=1.83.3",
+]
