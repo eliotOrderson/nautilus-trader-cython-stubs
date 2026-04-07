@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Generate stubs
+        run: bash generate_stubs.sh
+
+      - name: Verify stub count
+        run: |
+          PYX_COUNT=$(find nautilus_trader/nautilus_trader -name "*.pyx" -type f | wc -l)
+          PYI_COUNT=$(find stubs -name "*.pyi" -type f | wc -l)
+          echo "PYX files: $PYX_COUNT"
+          echo "PYI files: $PYI_COUNT"
+          if [ "$PYX_COUNT" -ne "$PYI_COUNT" ]; then
+            echo "Error: Stub count mismatch!"
+            exit 1
+          fi

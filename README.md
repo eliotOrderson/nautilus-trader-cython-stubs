@@ -11,6 +11,22 @@ These stubs serve the following purposes:
 - Provide consistent **type annotations** and **docstring visibility** for Cython modules  
 - Enable proper **import resolution** for Cython-based APIs 
 
+## Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/eliotOrderson/nautilus-trader-cython-stubs.git
+cd nautilus-trader-cython-stubs
+
+# Initialize project with uv
+uv sync
+
+# Generate and validate stubs
+bash generate_stubs.sh
+```
+
+**Requirements**: Python 3.14+ and [uv](https://docs.astral.sh/uv/)
+
 ## Generation
 
 Generate `.pyi` stub files from NautilusTrader's `.pyx` Cython sources:
@@ -24,7 +40,7 @@ python scripts/stub_generator.py --all
 bash scripts/validate_stubs.sh
 ```
 
-**Requirements**: Python 3.11+ and Cython
+**Requirements**: Python 3.14+ and Cython
 
 ## Installation
 
