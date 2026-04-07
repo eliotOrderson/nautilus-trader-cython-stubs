@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ast
 import re
 from pathlib import Path
 
@@ -118,6 +119,354 @@ class TypeNormalizer:
             return param, ""
 
 
+class ImportValidator:
+    """Validates that all used types in a stub are properly imported."""
+
+    BUILTIN_TYPES = {
+        "int",
+        "str",
+        "float",
+        "bool",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "None",
+        "Any",
+        "Callable",
+        "ClassVar",
+        "Type",
+        "Union",
+        "Optional",
+        "bytes",
+        "object",
+        "type",
+        "frozenset",
+        "complex",
+        "range",
+        "NotRequired",
+        "TypedDict",
+        "Protocol",
+        "Final",
+        "Literal",
+        "Sequence",
+        "Mapping",
+        "Iterable",
+        "Iterator",
+        "Generator",
+        "Awaitable",
+        "AsyncIterator",
+        "AsyncIterable",
+        "Coroutine",
+        "AsyncGenerator",
+        "ContextManager",
+        "AsyncContextManager",
+        # Built-in functions that can be used as types
+        "max",
+        "min",
+        "callable",
+        "len",
+        "abs",
+        "round",
+        "pow",
+        "hash",
+        "id",
+        "repr",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "frozenset",
+        # Standard library modules and types
+        "datetime",
+        "date",
+        "time",
+        "timedelta",
+        "timezone",
+        "Path",
+        "PurePath",
+        "Decimal",
+        "decimal",
+        "dt",  # Common alias for datetime
+        "isinstance",
+        "Exception",
+        "BaseException",
+        # C types (from libc.stdint)
+        "uint8_t",
+        "uint16_t",
+        "uint32_t",
+        "uint64_t",
+        "int8_t",
+        "int16_t",
+        "int32_t",
+        "int64_t",
+        "double",
+        # Standard library functions
+        "sorted",
+        "copy",
+        "load",
+        "get",
+        "create",
+        "zeros",
+        # Datetime functions
+        "utcnow",
+        "utc_now",
+        "astimezone",
+        "tzinfo",
+        "Timedelta",
+        "legs",
+        "get_tag",
+        "load_index_order_position",
+        "load_index_order_client",
+        # Third-party library aliases (common in data science)
+        "np",
+        "numpy",
+        "pd",
+        "pandas",
+        "DataFrame",
+        "Series",
+        "ndarray",
+        "array",
+        # Rust FFI functions (C bindings - these are low-level and shouldn't be tracked)
+        "zero_c",
+        "tz_convert",
+        "side_from_order_side",
+        "get_cost_currency",
+        "get_base_currency",
+        "from_str",
+        "from_raw_c",
+        "as_f64_c",
+    }
+
+    def __init__(self, pyi_file: Path):
+        self.pyi_file = pyi_file
+        self.imports: set[str] = set()
+        self.used_types: set[str] = set()
+        self.defined_classes: set[str] = set()  # Classes defined in this stub
+
+    def extract_imports(self):
+        """Extract all imported names from the stub."""
+        content = self.pyi_file.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    # For 'import X', add X
+                    self.imports.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    # For 'from X import Y', add Y
+                    for alias in node.names:
+                        if alias.name != "*":
+                            self.imports.add(alias.name)
+
+    def extract_used_types(self):
+        """Extract all type annotations used in the stub."""
+        content = self.pyi_file.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return
+
+        for node in ast.walk(tree):
+            # Class definitions - track class names for self-references
+            if isinstance(node, ast.ClassDef):
+                self.defined_classes.add(node.name)  # Track defined class
+                for base in node.bases:
+                    self._extract_type_from_node(base)
+
+            # Function annotations
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # Return type
+                if node.returns:
+                    self._extract_type_from_node(node.returns)
+                # Parameter types
+                for arg in node.args.args:
+                    if arg.annotation:
+                        self._extract_type_from_node(arg.annotation)
+                # Handle *args and **kwargs
+                if node.args.vararg and node.args.vararg.annotation:
+                    self._extract_type_from_node(node.args.vararg.annotation)
+                if node.args.kwarg and node.args.kwarg.annotation:
+                    self._extract_type_from_node(node.args.kwarg.annotation)
+
+            # Variable annotations
+            if isinstance(node, ast.AnnAssign):
+                if node.annotation:
+                    self._extract_type_from_node(node.annotation)
+
+    def _extract_type_from_node(self, node):
+        """Recursively extract type names from AST node."""
+        if isinstance(node, ast.Name):
+            self.used_types.add(node.id)
+        elif isinstance(node, ast.Subscript):
+            # Handle Generic types like List[int], Optional[str]
+            self._extract_type_from_node(node.value)
+            # Also extract the subscripted type
+            if isinstance(node.slice, ast.Tuple):
+                for elt in node.slice.elts:
+                    self._extract_type_from_node(elt)
+            else:
+                self._extract_type_from_node(node.slice)
+        elif isinstance(node, ast.Attribute):
+            # Handle module.Type references
+            self._extract_type_from_node(node.value)
+        elif isinstance(node, ast.BinOp):
+            # Handle Union types with | (Python 3.10+)
+            self._extract_type_from_node(node.left)
+            self._extract_type_from_node(node.right)
+        elif isinstance(node, ast.Tuple):
+            for elt in node.elts:
+                self._extract_type_from_node(elt)
+        elif isinstance(node, ast.Constant):
+            # Handle Literal types
+            pass
+
+    def validate(self) -> list[str]:
+        """Check if all used types are imported. Returns list of missing types."""
+        missing = []
+
+        for used_type in sorted(self.used_types):
+            # Skip private types (underscore-prefixed)
+            if used_type.startswith("_"):
+                continue
+            # Check against imports, builtins, and locally defined classes
+            if (
+                used_type not in self.imports
+                and used_type not in self.BUILTIN_TYPES
+                and used_type not in self.defined_classes
+            ):
+                missing.append(used_type)
+
+        return missing
+
+
+class TypeQualityValidator:
+    """Validates type quality in stubs - detects Any type overuse."""
+
+    GENERIC_TYPES = {"Any", "object"}
+
+    def __init__(self, pyi_file: Path):
+        self.pyi_file = pyi_file
+        self.any_usage: list[tuple[str, int, str]] = []  # (name, line_number, context)
+
+    def validate(self) -> list[str]:
+        """Check for Any type overuse. Returns list of warnings."""
+        content = self.pyi_file.read_text(encoding="utf-8")
+        lines = content.splitlines()
+
+        warnings = []
+
+        for i, line in enumerate(lines, 1):
+            # Skip import lines
+            stripped = line.strip()
+            if stripped.startswith("from ") or stripped.startswith("import "):
+                continue
+
+            # Check for `: Any` (but allow `list[Any]`, `dict[str, Any]`, etc.)
+            # Pattern: name: Any (at end of line or followed by =)
+            if re.search(r":\s*Any\s*($|=)", line):
+                # Extract context
+                match = re.search(r"def\s+(\w+)", line)
+                if match:
+                    context = f"method '{match.group(1)}'"
+                else:
+                    match = re.search(r"(\w+)\s*:", line)
+                    if match:
+                        context = f"variable '{match.group(1)}'"
+                    else:
+                        context = "unknown"
+
+                warnings.append(f"Type 'Any' used for {context} (line {i})")
+
+        return warnings
+
+
+class MethodSignatureValidator:
+    """Validates method signatures match between PYX and PYI."""
+
+    def __init__(self):
+        self.type_normalizer = TypeNormalizer()
+
+    def compare_signatures(
+        self, pyx_method: CythonMethodInfo, pyi_method: PyiMember
+    ) -> list[str]:
+        """Compare method signatures in detail. Returns list of errors."""
+        errors = []
+
+        # Compare return types
+        if pyx_method.return_type and pyi_method.return_type:
+            pyx_return = pyx_method.return_type.strip()
+            pyi_return = pyi_method.return_type.strip()
+
+            if not self._types_compatible(pyx_return, pyi_return):
+                errors.append(
+                    f"Return type mismatch: PYX has '{pyx_return}', "
+                    f"PYI has '{pyi_return}'"
+                )
+
+        # Compare parameter types
+        pyx_params = self._parse_parameters(pyx_method.args)
+        pyi_params = self._parse_parameters(pyi_method.parameters)
+
+        if len(pyx_params) != len(pyi_params):
+            errors.append(
+                f"Parameter count mismatch: PYX has {len(pyx_params)}, "
+                f"PYI has {len(pyi_params)}"
+            )
+        else:
+            for i, (pyx_param, pyi_param) in enumerate(zip(pyx_params, pyi_params)):
+                pyx_name, pyx_type = pyx_param
+                pyi_name, pyi_type = pyi_param
+
+                if pyx_name != pyi_name:
+                    errors.append(
+                        f"Parameter {i} name mismatch: PYX has '{pyx_name}', "
+                        f"PYI has '{pyi_name}'"
+                    )
+
+                if pyx_type and pyi_type:
+                    if not self._types_compatible(pyx_type, pyi_type):
+                        errors.append(
+                            f"Parameter '{pyx_name}' type mismatch: "
+                            f"PYX has '{pyx_type}', PYI has '{pyi_type}'"
+                        )
+
+        return errors
+
+    def _parse_parameters(self, params: list[str]) -> list[tuple[str, str]]:
+        """Parse parameter list into (name, type) tuples."""
+        parsed = []
+        for param in params:
+            name, type_hint = self.type_normalizer.normalize_parameter(param)
+            parsed.append((name, type_hint))
+        return parsed
+
+    def _types_compatible(self, pyx_type: str, pyi_type: str) -> bool:
+        """Check if PYI type is compatible with PYX type."""
+        # Normalize types
+        pyx_normalized = self.type_normalizer.normalize_cython_type(pyx_type)
+        pyi_normalized = self.type_normalizer.normalize_cython_type(pyi_type)
+
+        # Exact match
+        if pyx_normalized == pyi_normalized:
+            return True
+
+        # Allow more specific types in PYI
+        if self.type_normalizer.is_pyi_type_more_specific(pyx_type, pyi_type):
+            return True
+
+        return False
+
+
 class ValidationReporter:
     def __init__(self, pyx_file: Path, pyi_file: Path):
         self.pyx_file = pyx_file
@@ -215,6 +564,11 @@ class PyxPyiValidator:
         self.reporter = ValidationReporter(pyx_file, pyi_file)
         self.type_normalizer = TypeNormalizer()
 
+        # New validators
+        self.import_validator = ImportValidator(pyi_file)
+        self.quality_validator = TypeQualityValidator(pyi_file)
+        self.signature_validator = MethodSignatureValidator()
+
     def validate(self) -> bool:
         print(f"Validating {self.pyx_file} -> {self.pyi_file}")
 
@@ -228,9 +582,16 @@ class PyxPyiValidator:
         if not self._parse_files():
             return False
 
+        # Original validations
         self._validate_classes()
         self._validate_functions()
         self._validate_global_variables()
+
+        # NEW: Import validation
+        self._validate_imports()
+
+        # NEW: Type quality validation
+        self._validate_type_quality()
 
         return not self.reporter.has_errors() and (
             self.pass_warning or not self.reporter.has_warnings()
@@ -363,6 +724,22 @@ class PyxPyiValidator:
             pyi_variable = self.pyi_global_variables[variable_name]
 
             self._validate_global_variable(variable_name, pyx_variable, pyi_variable)
+
+    def _validate_imports(self):
+        """Validate that all used types are properly imported."""
+        self.import_validator.extract_imports()
+        self.import_validator.extract_used_types()
+        missing_imports = self.import_validator.validate()
+
+        for missing in missing_imports:
+            self.reporter.add_error(f"Missing import for type '{missing}'")
+
+    def _validate_type_quality(self):
+        """Validate type quality - warn about Any overuse."""
+        quality_warnings = self.quality_validator.validate()
+
+        for warning in quality_warnings:
+            self.reporter.add_warning(f"Type quality: {warning}")
 
     def _validate_class(self, pyx_class: CythonClassInfo, pyi_class: PyiClassInfo):
         class_name = pyx_class.name
